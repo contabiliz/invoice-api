@@ -20,7 +20,6 @@ Users are created automatically on first run if they don't exist.
 import os
 
 import httpx
-import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
 

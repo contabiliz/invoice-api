@@ -11,7 +11,6 @@ To migrate to AWS:
 - Replace queue depth check with SQS ApproximateNumberOfMessages.
 """
 
-import json
 from abc import ABC, abstractmethod
 from uuid import UUID
 
@@ -21,7 +20,6 @@ from invoice_models import UploadConfirmationNotification
 
 
 class CachePort(ABC):
-
     @abstractmethod
     async def queue_depth(self) -> int:
         """Return current depth of the uploads channel / processing queue."""
