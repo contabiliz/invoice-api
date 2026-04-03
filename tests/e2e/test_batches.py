@@ -13,8 +13,10 @@ import pytest
 
 from tests.e2e.conftest import (
     API_PREFIX,
+    SAMPLE_PDF,
     SAMPLE_XML,
     presign_one_doc,
+    presign_one_pdf_doc,
     upload_to_presigned_url,
 )
 
@@ -274,6 +276,41 @@ async def test_confirm_rejects_doc_ids_from_other_batch(authed):
         json={"document_ids": [batch_b["documents"][0]["document_id"]]},
     )
     assert resp.status_code == 422
+
+
+# ── PDF document tests ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_confirm_happy_path_pdf(authed):
+    # 1. Presign a PDF
+    data = await presign_one_pdf_doc(authed)
+    batch_id = data["batch_id"]
+    doc = data["documents"][0]
+
+    # 2. Upload PDF directly to Supabase Storage
+    await upload_to_presigned_url(doc["upload_url"], content=SAMPLE_PDF, content_type="application/pdf")
+
+    # 3. Confirm
+    resp = await authed.post(
+        f"{API_PREFIX}/batches/{batch_id}/confirm",
+        json={"document_ids": [doc["document_id"]]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert doc["document_id"] in body["confirmed"]
+    assert body["failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_list_documents_pdf_doc_type(authed):
+    """PDF documents must be listed with doc_type == 'pdf'."""
+    data = await presign_one_pdf_doc(authed)
+    batch_id = data["batch_id"]
+
+    resp = await authed.get(f"{API_PREFIX}/batches/{batch_id}/documents")
+    assert resp.status_code == 200
+    item = resp.json()["items"][0]
+    assert item["doc_type"] == "pdf"
 
 
 # ── GET /batches/{id} ─────────────────────────────────────────────────────────

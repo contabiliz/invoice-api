@@ -132,6 +132,21 @@ SAMPLE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
   </infNFe></NFe>
 </nfeProc>"""
 
+# Minimal valid single-page PDF for upload tests
+SAMPLE_PDF = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n"
+    b"xref\n0 4\n"
+    b"0000000000 65535 f \n"
+    b"0000000009 00000 n \n"
+    b"0000000058 00000 n \n"
+    b"0000000115 00000 n \n"
+    b"trailer<</Size 4/Root 1 0 R>>\n"
+    b"startxref\n190\n%%EOF"
+)
+
 
 async def presign_one_doc(client: httpx.AsyncClient, filename: str = "nota.xml") -> dict:
     """Helper: presign a single XML document and return the full response JSON."""
@@ -147,7 +162,25 @@ async def presign_one_doc(client: httpx.AsyncClient, filename: str = "nota.xml")
     return resp.json()
 
 
-async def upload_to_presigned_url(upload_url: str, content: bytes = SAMPLE_XML) -> None:
+async def presign_one_pdf_doc(client: httpx.AsyncClient, filename: str = "invoice.pdf") -> dict:
+    """Helper: presign a single PDF document and return the full response JSON."""
+    resp = await client.post(
+        f"{API_PREFIX}/batches/presign",
+        json={
+            "documents": [
+                {"filename": filename, "mime_type": "application/pdf", "file_size": len(SAMPLE_PDF)}
+            ]
+        },
+    )
+    assert resp.status_code == 202, resp.text
+    return resp.json()
+
+
+async def upload_to_presigned_url(
+    upload_url: str,
+    content: bytes = SAMPLE_XML,
+    content_type: str = "application/xml",
+) -> None:
     """PUT the file content directly to the presigned URL (bypasses API).
 
     Replaces host.docker.internal with localhost so host-side tests can reach
@@ -158,6 +191,6 @@ async def upload_to_presigned_url(upload_url: str, content: bytes = SAMPLE_XML) 
         resp = await client.put(
             upload_url,
             content=content,
-            headers={"Content-Type": "application/xml"},
+            headers={"Content-Type": content_type},
         )
         assert resp.status_code in (200, 201), f"Upload failed: {resp.status_code} {resp.text}"
