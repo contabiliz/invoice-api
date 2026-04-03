@@ -33,6 +33,8 @@ from invoice_models.api.batches import BatchStatusResponse
 
 logger = get_logger(__name__)
 
+_PRESIGN_SEMAPHORE = asyncio.Semaphore(30)
+
 router = APIRouter(prefix="/batches", tags=["batches"])
 
 # SEC-004: object key must be {user_id}/{batch_id}/{doc_id}
@@ -67,6 +69,7 @@ def _validate_object_key(key: str, user_id: UUID) -> None:
 # ---------------------------------------------------------------------------
 # POST /batches/presign
 # ---------------------------------------------------------------------------
+
 
 @router.post(
     "/presign",
@@ -103,23 +106,26 @@ async def presign_batch(
         doc_id = uuid4()
         doc_type = _mime_to_doc_type(doc.mime_type)
         s3_key = _build_object_key(user_id, batch_id, doc_id)
-        doc_entries.append({
-            "id": doc_id,
-            "filename": doc.filename,
-            "s3_key": s3_key,
-            "file_size": doc.file_size,
-            "doc_type": doc_type,
-        })
+        doc_entries.append(
+            {
+                "id": doc_id,
+                "filename": doc.filename,
+                "s3_key": s3_key,
+                "file_size": doc.file_size,
+                "doc_type": doc_type,
+            }
+        )
 
     # Persist batch + documents in a single transaction
     await db.create_batch_with_documents(batch_id, user_id, doc_entries)
 
     # Generate presigned URLs concurrently — FW-003 / performance requirement
     async def _presign(entry: dict) -> tuple[dict, str, datetime]:
-        url, expires_at = await storage.generate_presigned_upload_url(
-            entry["s3_key"],
-            settings.PRESIGN_EXPIRY_SECONDS,
-        )
+        async with _PRESIGN_SEMAPHORE:
+            url, expires_at = await storage.generate_presigned_upload_url(
+                entry["s3_key"],
+                settings.PRESIGN_EXPIRY_SECONDS,
+            )
         return entry, url, expires_at
 
     async with asyncio.TaskGroup() as tg:
@@ -148,6 +154,7 @@ async def presign_batch(
 # ---------------------------------------------------------------------------
 # POST /batches/{batch_id}/confirm
 # ---------------------------------------------------------------------------
+
 
 class ConfirmRequest(BaseModel):
     document_ids: list[UUID] = Field(min_length=1, max_length=500)
@@ -180,7 +187,9 @@ async def confirm_batch(
     # Verify batch exists and belongs to the authenticated user
     batch_row = await db.get_batch(batch_id, user_id)
     if batch_row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Batch not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Batch not found"
+        )
 
     if batch_row["status"] not in (
         "pending_upload",
@@ -203,11 +212,11 @@ async def confirm_batch(
 
     # Skip documents that are already past pending_upload (idempotency)
     to_verify = [
-        row for row in doc_rows
-        if row["status"] == DocumentStatus.pending_upload.value
+        row for row in doc_rows if row["status"] == DocumentStatus.pending_upload.value
     ]
     already_done = [
-        row["id"] for row in doc_rows
+        row["id"]
+        for row in doc_rows
         if row["status"] != DocumentStatus.pending_upload.value
     ]
 
@@ -260,6 +269,7 @@ async def confirm_batch(
 # GET /batches/{batch_id}
 # ---------------------------------------------------------------------------
 
+
 @router.get(
     "/{batch_id}",
     response_model=BatchStatusResponse,
@@ -272,13 +282,16 @@ async def get_batch_status(
 ) -> BatchStatusResponse:
     result = await db.get_batch_status(batch_id, user_id)
     if result is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Batch not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Batch not found"
+        )
     return result
 
 
 # ---------------------------------------------------------------------------
 # GET /batches/{batch_id}/documents
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "/{batch_id}/documents",
@@ -296,6 +309,8 @@ async def list_documents(
     # Verify batch ownership before listing
     batch_row = await db.get_batch(batch_id, user_id)
     if batch_row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Batch not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Batch not found"
+        )
 
     return await db.list_documents(batch_id, user_id, page, page_size, status_filter)

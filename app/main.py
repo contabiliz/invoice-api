@@ -55,7 +55,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         decode_responses=True,
     )
 
-    storage_http = httpx.AsyncClient(timeout=10.0)
+    storage_http = httpx.AsyncClient(
+        timeout=10.0,
+        limits=httpx.Limits(
+            max_connections=50,
+            max_keepalive_connections=20,
+        ),
+    )
     jwks_http = httpx.AsyncClient(timeout=10.0)
 
     app.state.db = AsyncpgDatabaseAdapter(db_pool)
@@ -111,7 +117,9 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 
 @app.exception_handler(Exception)
-async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+async def _unhandled_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
     """
     Global fallback handler.
     Log the full traceback internally; return a generic 500 to the client.
