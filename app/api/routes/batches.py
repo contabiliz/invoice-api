@@ -27,6 +27,7 @@ from invoice_models import (
     DocumentListResponse,
     DocumentPresignUrl,
     DocumentStatus,
+    DocumentDetailResponse,
     UploadConfirmationNotification,
 )
 from invoice_models.api.batches import BatchStatusResponse
@@ -34,6 +35,8 @@ from invoice_models.api.batches import BatchStatusResponse
 logger = get_logger(__name__)
 
 _PRESIGN_SEMAPHORE = asyncio.Semaphore(30)
+
+_VIEWABLE_STATUSES = {"upload_confirmed", "queued", "processing", "completed", "failed"}
 
 router = APIRouter(prefix="/batches", tags=["batches"])
 
@@ -314,3 +317,60 @@ async def list_documents(
         )
 
     return await db.list_documents(batch_id, user_id, page, page_size, status_filter)
+
+
+# ---------------------------------------------------------------------------
+# GET /{batch_id}/documentd/{document_id}
+# ---------------------------------------------------------------------------
+@router.get(
+    "/{batch_id}/documents/{document_id}",
+    response_model=DocumentDetailResponse,
+    summary="Get single document detail",
+)
+async def get_document(
+    batch_id: UUID,
+    document_id: UUID,
+    user_id: UUID = Depends(get_current_user),
+    db: DatabasePort = Depends(get_db),
+):
+    row = await db.get_document(batch_id, user_id, document_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return row
+
+
+# ---------------------------------------------------------------------------
+# GET /{batch_id}/documents/{document_id}/view-url
+# ---------------------------------------------------------------------------
+#
+class ViewUrlResponse(BaseModel):
+    url: str
+    expires_at: datetime
+
+
+@router.get(
+    "/{batch_id}/documents/{document_id}/view-url",
+    response_model=ViewUrlResponse,
+    summary="Create view url for PDF documents",
+)
+async def get_document_view_url(
+    batch_id: UUID,
+    document_id: UUID,
+    user_id: UUID = Depends(get_current_user),
+    db: DatabasePort = Depends(get_db),
+    storage: StoragePort = Depends(get_storage),
+) -> ViewUrlResponse:
+    row = await db.get_document(batch_id, user_id, document_id)
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if row["status"] not in _VIEWABLE_STATUSES:
+        raise HTTPException(
+            status_code=409, detail="Document not available for viewing"
+        )
+
+    url, expires_at = await storage.generate_presigned_read_url(
+        row["s3_key"], settings.VIEW_URL_EXPIRY_SECONDS
+    )
+    return ViewUrlResponse(url=url, expires_at=expires_at)

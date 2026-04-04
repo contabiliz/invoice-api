@@ -47,6 +47,12 @@ class DatabasePort(ABC):
         """Fetch a batch row filtered by user_id."""
 
     @abstractmethod
+    async def get_document(
+        self, batch_id: UUID, user_id: UUID, document_id: UUID
+    ) -> asyncpg.Record | None:
+        """Fetch a document row filtered by user_id"""
+
+    @abstractmethod
     async def get_documents_for_confirm(
         self,
         batch_id: UUID,
@@ -140,6 +146,17 @@ class AsyncpgDatabaseAdapter(DatabasePort):
                 "SELECT * FROM batches WHERE id = $1 AND user_id = $2",
                 batch_id,
                 user_id,
+            )
+
+    async def get_document(
+        self, batch_id: UUID, user_id: UUID, document_id: UUID
+    ) -> asyncpg.Record | None:
+        async with self._pool.acquire() as conn:
+            return await conn.fetchrow(
+                "SELECT * FROM documents WHERE batch_id = $1 AND user_id = $2 AND id = $3",
+                batch_id,
+                user_id,
+                document_id,
             )
 
     async def get_documents_for_confirm(

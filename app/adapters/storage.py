@@ -34,6 +34,19 @@ class StoragePort(ABC):
         """
 
     @abstractmethod
+    async def generate_presigned_read_url(
+        self,
+        object_key: str,
+        expires_in: int,
+    ) -> tuple[str, datetime]:
+        """
+        Generate a presigned URL for a GET.
+
+        Returns:
+            (url, expires_at)
+        """
+
+    @abstractmethod
     async def object_exists(self, object_key: str) -> bool:
         """Return True if the object exists in storage."""
 
@@ -100,6 +113,45 @@ class SupabaseStorageAdapter(StoragePort):
 
         expires_at = datetime.now(tz=timezone.utc) + timedelta(seconds=expires_in)
         return upload_url, expires_at
+
+    async def generate_presigned_read_url(
+        self,
+        object_key: str,
+        expires_in: int,
+    ) -> tuple[str, datetime]:
+        """
+        Call Supabase Storage to create a signed GET URL.
+
+        POST /storage/v1/object/sign/{bucket}/{key}
+        """
+        url = f"{self._base}/storage/v1/object/sign/{self._bucket}/{object_key}"
+        resp = await self._client.post(
+            url,
+            headers={**self._auth_headers, "Content-Type": "application/json"},
+            json={"expiresIn": expires_in},
+        )
+        if not resp.is_success:
+            logger.error(
+                "storage.view_presign_failed",
+                status=resp.status_code,
+                body=resp.text,
+                object_key=object_key,
+            )
+            resp.raise_for_status()
+
+        data = resp.json()
+        signed_path: str = data.get("url") or data.get("signedURL", "")
+        if not signed_path:
+            raise RuntimeError(f"Unexpected storage response: {data}")
+
+        # Supabase returns a path relative to /storage/v1; prepend full base if needed
+        if signed_path.startswith("/"):
+            view_url = f"{self._base}/storage/v1{signed_path}"
+        else:
+            view_url = signed_path
+
+        expires_at = datetime.now(tz=timezone.utc) + timedelta(seconds=expires_in)
+        return view_url, expires_at
 
     async def object_exists(self, object_key: str) -> bool:
         """

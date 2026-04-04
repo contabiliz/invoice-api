@@ -46,6 +46,7 @@ class Settings(BaseSettings):
 
     # Presigned URL TTL (seconds)
     PRESIGN_EXPIRY_SECONDS: int = 900  # 15 minutes
+    VIEW_URL_EXPIRY_SECONDS: int = 300  # 5 minutes
 
     @computed_field
     @property
