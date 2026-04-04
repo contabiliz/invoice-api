@@ -10,6 +10,7 @@ To migrate to AWS RDS:
 """
 
 from abc import ABC, abstractmethod
+from datetime import datetime, timedelta
 from uuid import UUID
 
 import asyncpg
@@ -19,6 +20,13 @@ from invoice_models import (
     DocType,
     DocumentStatus,
     MimeType,
+)
+from invoice_models.api.analytics import (
+    AnalyticsDocumentBreakdown,
+    AnalyticsDocumentBreakdownList,
+    AnalyticsKPIResponse,
+    AnalyticsTimeSeriesPoint,
+    AnalyticsTimeSeriesResponse,
 )
 from invoice_models.api.batches import BatchStatusResponse
 from invoice_models.api.documents import DocumentListResponse, DocumentStatusItem
@@ -87,6 +95,31 @@ class DatabasePort(ABC):
         status: DocumentStatus | None,
     ) -> DocumentListResponse:
         """Paginated document list for a batch."""
+
+    # ─── Analytics ─────────────────────────────────────────────────────────
+
+    @abstractmethod
+    async def get_analytics_kpis(
+        self, user_id: UUID, days: int = 30
+    ) -> AnalyticsKPIResponse:
+        """Aggregate KPIs over the last N days for the given user."""
+
+    @abstractmethod
+    async def get_analytics_timeseries(
+        self, user_id: UUID, days: int
+    ) -> AnalyticsTimeSeriesResponse:
+        """Daily time-series aggregation over the last N days."""
+
+    @abstractmethod
+    async def get_analytics_documents(
+        self,
+        user_id: UUID,
+        page: int,
+        page_size: int,
+        sort_by: str,
+        sort_order: str,
+    ) -> AnalyticsDocumentBreakdownList:
+        """Paginated document breakdown with sorting."""
 
 
 class AsyncpgDatabaseAdapter(DatabasePort):
@@ -296,3 +329,163 @@ class AsyncpgDatabaseAdapter(DatabasePort):
         ]
 
         return DocumentListResponse(total=total, page=page, items=items)
+
+    # ─── Analytics ─────────────────────────────────────────────────────────
+
+    async def get_analytics_kpis(
+        self, user_id: UUID, days: int = 30
+    ) -> AnalyticsKPIResponse:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    COUNT(*) AS total_documents,
+                    COUNT(*) FILTER (WHERE status = 'completed') AS success_count,
+                    COUNT(*) FILTER (WHERE status = 'failed') AS failure_count
+                FROM documents
+                WHERE user_id = $1
+                  AND created_at >= $2
+                """,
+                str(user_id),
+                cutoff,
+            )
+
+        total = int(row["total_documents"])
+        success = int(row["success_count"])
+        failure = int(row["failure_count"])
+        rate = (success / total * 100) if total > 0 else 0.0
+
+        return AnalyticsKPIResponse(
+            total_documents=total,
+            success_count=success,
+            failure_count=failure,
+            success_rate=round(rate, 1),
+        )
+
+    async def get_analytics_timeseries(
+        self, user_id: UUID, days: int
+    ) -> AnalyticsTimeSeriesResponse:
+        cutoff = datetime.utcnow() - timedelta(days=days - 1)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    created_at::date AS day,
+                    COUNT(*) AS total,
+                    COUNT(*) FILTER (WHERE status = 'completed') AS success,
+                    COUNT(*) FILTER (WHERE status = 'failed') AS failure
+                FROM documents
+                WHERE user_id = $1
+                  AND created_at >= $2
+                GROUP BY day
+                ORDER BY day
+                """,
+                str(user_id),
+                cutoff,
+            )
+
+        points = [
+            AnalyticsTimeSeriesPoint(
+                date=row["day"].isoformat(),
+                total=int(row["total"]),
+                success=int(row["success"]),
+                failure=int(row["failure"]),
+            )
+            for row in rows
+        ]
+
+        labels = {
+            7: "Últimos 7 dias",
+            30: "Últimos 30 dias",
+            90: "Últimos 90 dias",
+        }
+        date_range = labels.get(days, f"Últimos {days} dias")
+
+        presets = {
+            "7d": "7 dias",
+            "30d": "30 dias",
+            "90d": "90 dias",
+            "mtd": "Mês atual",
+        }
+
+        return AnalyticsTimeSeriesResponse(
+            points=points,
+            date_range=date_range,
+            presets=presets,
+        )
+
+    async def get_analytics_documents(
+        self,
+        user_id: UUID,
+        page: int,
+        page_size: int,
+        sort_by: str,
+        sort_order: str,
+    ) -> AnalyticsDocumentBreakdownList:
+        offset = (page - 1) * page_size
+
+        valid_sort = {"created_at", "doc_type", "status", "processing_time_ms"}
+        if sort_by not in valid_sort:
+            sort_by = "created_at"
+        order_dir = "ASC" if sort_order.upper() == "ASC" else "DESC"
+
+        order_clause = {
+            "created_at": f"created_at {order_dir}",
+            "doc_type": f"doc_type {order_dir}",
+            "status": f"status {order_dir}",
+            "processing_time_ms": f"COALESCE(EXTRACT(EPOCH FROM (completed_at - created_at)) * 1000, 0) {order_dir}",
+        }[sort_by]
+
+        query = f"""
+                SELECT id, batch_id, doc_type, status,
+                       created_at,
+                       COALESCE(
+                           EXTRACT(EPOCH FROM (completed_at - created_at)) * 1000,
+                           0
+                       ) AS processing_time_ms,
+                       CASE
+                           WHEN status = 'completed' THEN 'success'
+                           WHEN status = 'failed' THEN 'failed'
+                           WHEN status = 'upload_confirmed' THEN 'partial'
+                           WHEN status = 'processing' THEN 'partial'
+                           ELSE 'skipped'
+                       END AS extraction_result
+                FROM documents
+                WHERE user_id = $1
+                ORDER BY {order_clause}
+                LIMIT $2 OFFSET $3
+                """
+
+        async with self._pool.acquire() as conn:
+            total: int = await conn.fetchval(
+                "SELECT COUNT(*) FROM documents WHERE user_id = $1",
+                str(user_id),
+            )
+
+            rows = await conn.fetch(
+                query,
+                str(user_id),
+                page_size,
+                offset,
+            )
+
+        items = [
+            AnalyticsDocumentBreakdown(
+                document_id=str(row["id"]),
+                batch_id=str(row["batch_id"]),
+                type=row["doc_type"],
+                status=row["status"],
+                processing_time_ms=int(row["processing_time_ms"]),
+                extraction_result=row["extraction_result"],
+                created_at=row["created_at"].isoformat(),
+            )
+            for row in rows
+        ]
+
+        return AnalyticsDocumentBreakdownList(
+            items=items,
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
