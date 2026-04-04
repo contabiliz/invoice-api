@@ -6,6 +6,8 @@ Covers:
   - Confirm: happy path, partial storage failure, idempotency, cross-tenant isolation
   - Status: GET /batches/{id}
   - Documents: GET /batches/{id}/documents with filtering
+  - DocumentDetail: GET /batches/{id}/documents/{doc_id}
+  - ViewUrl: GET /batches/{id}/documents/{doc_id}/view-url
   - Cross-tenant isolation (T-CRIT-006, T-CRIT-009)
 """
 
@@ -445,5 +447,152 @@ async def test_cross_tenant_confirm_returns_404(authed, authed2):
     resp = await authed2.post(
         f"{API_PREFIX}/batches/{batch_id}/confirm",
         json={"document_ids": [doc_id]},
+    )
+    assert resp.status_code == 404
+
+
+# ── GET /batches/{id}/documents/{doc_id} ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_get_document_happy_path(authed):
+    data = await presign_one_doc(authed)
+    batch_id = data["batch_id"]
+    doc_id = data["documents"][0]["document_id"]
+
+    resp = await authed.get(f"{API_PREFIX}/batches/{batch_id}/documents/{doc_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["document_id"] == doc_id
+    assert body["filename"] == "nota.xml"
+    assert body["doc_type"] == "xml"
+    assert body["status"] == "pending_upload"
+    assert body["extracted_data"] is None
+    assert body["error_reason"] is None
+    assert "created_at" in body
+    assert "updated_at" in body
+
+
+@pytest.mark.asyncio
+async def test_get_document_pdf_doc_type(authed):
+    data = await presign_one_pdf_doc(authed)
+    batch_id = data["batch_id"]
+    doc_id = data["documents"][0]["document_id"]
+
+    resp = await authed.get(f"{API_PREFIX}/batches/{batch_id}/documents/{doc_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["document_id"] == doc_id
+    assert body["doc_type"] == "pdf"
+    assert body["status"] == "pending_upload"
+
+
+@pytest.mark.asyncio
+async def test_get_document_unknown_doc_returns_404(authed):
+    data = await presign_one_doc(authed)
+    batch_id = data["batch_id"]
+
+    resp = await authed.get(
+        f"{API_PREFIX}/batches/{batch_id}/documents/00000000-0000-0000-0000-000000000000"
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_document_unknown_batch_returns_404(authed):
+    resp = await authed.get(
+        f"{API_PREFIX}/batches/00000000-0000-0000-0000-000000000000"
+        f"/documents/00000000-0000-0000-0000-000000000001"
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_document_doc_from_other_batch_returns_404(authed):
+    """Document ID that exists but belongs to a different batch must return 404."""
+    batch_a = await presign_one_doc(authed, filename="a.xml")
+    batch_b = await presign_one_doc(authed, filename="b.xml")
+
+    doc_b_id = batch_b["documents"][0]["document_id"]
+    resp = await authed.get(
+        f"{API_PREFIX}/batches/{batch_a['batch_id']}/documents/{doc_b_id}"
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_document_cross_tenant_returns_404(authed, authed2):
+    """T-CRIT-006: user2 must not retrieve user1's document detail."""
+    data = await presign_one_doc(authed)
+    batch_id = data["batch_id"]
+    doc_id = data["documents"][0]["document_id"]
+
+    resp = await authed2.get(f"{API_PREFIX}/batches/{batch_id}/documents/{doc_id}")
+    assert resp.status_code == 404
+
+
+# ── GET /batches/{id}/documents/{doc_id}/view-url ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_get_view_url_returns_409_when_pending_upload(authed):
+    """Document in pending_upload status must not be viewable."""
+    data = await presign_one_pdf_doc(authed)
+    batch_id = data["batch_id"]
+    doc_id = data["documents"][0]["document_id"]
+
+    resp = await authed.get(
+        f"{API_PREFIX}/batches/{batch_id}/documents/{doc_id}/view-url"
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_get_view_url_happy_path_after_confirm(authed):
+    """Confirmed document must return a presigned URL with expiry."""
+    data = await presign_one_pdf_doc(authed)
+    batch_id = data["batch_id"]
+    doc = data["documents"][0]
+
+    await upload_to_presigned_url(doc["upload_url"], content=SAMPLE_PDF, content_type="application/pdf")
+    await authed.post(
+        f"{API_PREFIX}/batches/{batch_id}/confirm",
+        json={"document_ids": [doc["document_id"]]},
+    )
+
+    resp = await authed.get(
+        f"{API_PREFIX}/batches/{batch_id}/documents/{doc['document_id']}/view-url"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "url" in body
+    assert "expires_at" in body
+    assert body["url"].startswith("http")
+
+
+@pytest.mark.asyncio
+async def test_get_view_url_unknown_document_returns_404(authed):
+    data = await presign_one_pdf_doc(authed)
+    batch_id = data["batch_id"]
+
+    resp = await authed.get(
+        f"{API_PREFIX}/batches/{batch_id}/documents/00000000-0000-0000-0000-000000000000/view-url"
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_view_url_cross_tenant_returns_404(authed, authed2):
+    """T-CRIT-006: user2 must not obtain a view URL for user1's document."""
+    data = await presign_one_pdf_doc(authed)
+    batch_id = data["batch_id"]
+    doc = data["documents"][0]
+
+    await upload_to_presigned_url(doc["upload_url"], content=SAMPLE_PDF, content_type="application/pdf")
+    await authed.post(
+        f"{API_PREFIX}/batches/{batch_id}/confirm",
+        json={"document_ids": [doc["document_id"]]},
+    )
+
+    resp = await authed2.get(
+        f"{API_PREFIX}/batches/{batch_id}/documents/{doc['document_id']}/view-url"
     )
     assert resp.status_code == 404
