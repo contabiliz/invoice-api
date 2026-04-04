@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v1.2.0 (2026-04-04)
+
+### Features
+
+- Add DocumentDetail feature
+  ([`6eeab3b`](https://github.com/contabiliz/invoice-api/commit/6eeab3bd853e95b7e6eed926bb7361886dc13df6))
+
+- Add tests for DocumentDetails feature
+  ([`1ca94a6`](https://github.com/contabiliz/invoice-api/commit/1ca94a666308d52a5f1718fa8347ca4f41fcff19))
+
+
 ## v1.1.0 (2026-04-04)
 
 ### Features
