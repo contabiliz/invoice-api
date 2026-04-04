@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.1.0 (2026-04-04)
+
+### Features
+
+- Add analytics API endpoints with SQL aggregation queries (ANAL-01..03)
+  ([`6e2b4b3`](https://github.com/contabiliz/invoice-api/commit/6e2b4b3ef75989a1e9f4b54312ff061a75c29e35))
+
+
 ## v1.0.1 (2026-04-03)
 
 ### Chores
