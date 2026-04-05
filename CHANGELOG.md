@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.3.0 (2026-04-05)
+
+### Features
+
+- Add host transport for supabase self hosted
+  ([`0995376`](https://github.com/contabiliz/invoice-api/commit/0995376488215af6f3bc12e31b318c36f604f958))
+
+
 ## v1.2.0 (2026-04-04)
 
 ### Features
