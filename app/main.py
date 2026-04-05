@@ -28,6 +28,7 @@ from starlette.middleware.cors import CORSMiddleware
 from app.adapters.cache import RedisAdapter
 from app.adapters.database import AsyncpgDatabaseAdapter
 from app.adapters.storage import SupabaseStorageAdapter
+from app.adapters.host_transport import RewriteHostTransport
 from app.api.main import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
@@ -57,6 +58,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     storage_http = httpx.AsyncClient(
         timeout=10.0,
+        # Transport layer for self-hosted supabase.
+        transport=RewriteHostTransport(
+            wrapped=httpx.AsyncHTTPTransport(),
+            public_base=settings.SUPABASE_PUBLIC_URL,
+            internal_base=settings.SUPABASE_URL,
+        ),
         limits=httpx.Limits(
             max_connections=50,
             max_keepalive_connections=20,
@@ -70,7 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         http_client=jwks_http,
     )
     app.state.storage = SupabaseStorageAdapter(
-        supabase_url=settings.SUPABASE_URL,
+        supabase_url=settings.SUPABASE_PUBLIC_URL,  # for self-hosted
         service_role_key=settings.SUPABASE_SERVICE_ROLE_KEY,
         bucket=settings.SUPABASE_STORAGE_BUCKET,
         client=storage_http,
